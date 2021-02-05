@@ -4,10 +4,10 @@ source 'https://rubygems.org'
 
 git_source(:github) { |repo_name| "https://github.com/#{repo_name}" }
 
-ruby '>= 2.3.0', '< 2.8.0'
+ruby '~> 2.7.0'
 
-gem 'puma', '~> 5.1.1'
-gem 'rails', '~> 6.0.3.4'
+gem 'puma', '~> 5.2.0'
+gem 'rails', '~> 6.1.1'
 gem 'rails-i18n', '~> 6.0.0'
 gem 'rake', '~> 13.0.3'
 
@@ -69,7 +69,7 @@ gem 'rqrcode'
 
 # 异步队列
 gem 'activejob-status'
-gem 'sidekiq', '6.1.2'
+gem 'sidekiq', '6.1.3'
 gem 'sidekiq-cron', github: 'MikeRogers0/sidekiq-cron', branch: 'bug/fix-redis-warning' # See https://github.com/ondrejbartas/sidekiq-cron/issues/286
 
 # Assets
@@ -77,7 +77,7 @@ gem 'turbolinks', '~> 5'
 gem 'webpacker', '~> 5.2'
 
 # 用于解析 ipa 和 apk 包
-gem 'app-info', '~> 2.2.0'
+gem 'app-info', '~> 2.3.0'
 
 # Mobile config
 gem 'rails-settings-cached', '~> 2.5'
@@ -87,7 +87,7 @@ gem 'bootsnap', '>= 1.4.7', require: false
 
 group :development do
   # 调试控制台
-  gem 'listen', '>= 3.0.5', '< 3.4'
+  gem 'listen', '>= 3.0.5', '< 3.5'
   gem 'web-console', '>= 3.3.0'
 
   # 调试器
