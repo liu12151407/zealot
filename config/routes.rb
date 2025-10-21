@@ -6,27 +6,43 @@ Rails.application.routes.draw do
   #############################################
   # User
   #############################################
-  devise_for :users, skip: :registrations, controllers: { omniauth_callbacks: 'users/omniauth_callbacks' }
-  devise_scope :user do
-    resource :registration,
-      only: %i[new create edit update],
-      path: 'users',
-      path_names: { new: 'sign_up' },
-      controller: 'users/registrations',
-      as: :user_registration do
-        get :cancel
-      end
-  end
+  devise_for :users, controllers: {
+    omniauth_callbacks: 'users/omniauth_callbacks',
+    registrations: 'users/registrations',
+    confirmations: 'users/confirmations',
+  }, skip: :unlocks
+
   #############################################
   # App
   #############################################
   resources :apps do
-    resources :schemes do
+    member do
+      get :new_owner
+      put :update_owner
+    end
+
+    collection do
+      resources :archives, only: %i[index update destroy], path: 'archived', module: :apps, as: 'archived_apps'
+    end
+
+    resources :collaborators, except: %i[index show]
+
+    resources :schemes, except: %i[show] do
       resources :channels, except: %i[index show]
+    end
+
+    resources :debug_files, only: [] do
+      collection do
+        get ':device', action: :device, as: :device
+      end
     end
   end
 
   resources :channels, only: %i[index show] do
+    member do
+      delete :destroy_releases
+    end
+
     resources :web_hooks, only: %i[new create destroy] do
       member do
         get :enable
@@ -50,16 +66,20 @@ Rails.application.routes.draw do
     end
 
     scope module: :channels do
-      resources :versions, only: %i[index show], id: /(.+)+/
-      resources :branches, only: %i[index]
-      resources :release_types, only: %i[index]
+      resources :versions, only: %i[index show destroy], constraints: { id: /(.+)+/ }
+      resources :branches, only: %i[index destroy], constraints: { id: /(.+)+/ }
+      resources :release_types, only: %i[index destroy], constraints: { id: /(.+)+/ }
     end
   end
 
   #############################################
   # Debug File
   #############################################
-  resources :debug_files, except: %i[show]
+  resources :debug_files do
+    member do
+      post :reprocess
+    end
+  end
 
   #############################################
   # Teardown
@@ -84,17 +104,19 @@ Rails.application.routes.draw do
   end
 
   #############################################
-  # UDID (iOS)
+  # UDID (iOS/iPadOS/arm chip macOS)
   #############################################
-  get 'udid', to: 'udid#index'
-  get 'udid/install', to: 'udid#install'
-  post 'udid/retrieve', to: 'udid#create'
-  get 'udid/:udid', to: 'udid#show', as: 'udid_result'
+  resources :udid, as: :udid, param: :udid, only: %i[ index show edit update ] do
+    collection do
+      get :qrcode
+      get :install
+      post :retrieve, action: :create
+    end
 
-  #############################################
-  # Health check
-  #############################################
-  health_check_routes
+    member do
+      post :register
+    end
+  end
 
   #############################################
   # Admin
@@ -103,46 +125,96 @@ Rails.application.routes.draw do
     namespace :admin do
       root to: 'settings#index'
 
-      resources :users, except: :show
-      resources :web_hooks, except: %i[edit update]
       resources :settings
-
+      resources :users, except: :show do
+        member do
+          put :lock
+          put :resend_confirmation
+          delete :unlock
+        end
+      end
+      resources :web_hooks, except: %i[ show new create ]
+      resources :apple_teams, only: %i[ edit update ]
       resources :background_jobs, only: :index
       resources :system_info, only: :index
       resources :database_analytics, only: :index
+      resources :apple_keys, except: %i[ edit update ] do
+        member do
+          put :sync_devices
+          get :private_key
+        end
+      end
 
-      # get :background_jobs, to: 'background_jobs#show'
-      # get :system_info, to: 'system_info#show'
+      resources :logs, only: %i[ index ] do
+        collection do
+          get :retrive
+        end
+      end
 
-      require 'sidekiq/web'
-      require 'sidekiq/cron/web'
-      mount Sidekiq::Web => 'sidekiq', as: :sidekiq
+      resources :backups do
+        collection do
+          get :parse_schedule
+        end
+
+        member do
+          post :enable
+          post :disable
+          post :perform
+          delete :job, action: :cancel_job
+          get :archive, action: :download_archive
+          delete :archive, action: :destroy_archive
+        end
+      end
+
+      namespace :service do
+        # zealot service
+        post :restart
+        get :status
+
+        # smtp
+        post :smtp_verify
+      end
+
+      mount GoodJob::Engine, at: 'jobs', as: :jobs
       mount PgHero::Engine, at: 'pghero', as: :pghero
     end
   end
 
   #############################################
-  # Development Only
-  #############################################
-  mount LetterOpenerWeb::Engine, at: 'letter_opener' if Rails.env.development?
-
-  #############################################
   # API v1
   #############################################
+  health_check_routes
+
   namespace :api do
-    namespace :apps do
-      post 'upload', to: 'upload#create'
+    resources :users, except: %i[new edit] do
+      collection do
+        get :me
+        get :search
+      end
 
-      get 'latest', to: 'latest#show'
-      get 'version_exist', to: 'version_exist#show'
-      get 'versions', to: 'versions#index'
-      get 'versions/(:release_version)', to: 'versions#show'
-
-      get ':id', action: :show
-      patch ':id', action: :update
-      delete ':id', action: :destroy
-      get '', action: :index
+      member do
+        post :lock
+        delete :unlock
+      end
     end
+
+    resources :apps, except: %i[new edit] do
+      collection do
+        post :upload, to: 'apps/upload#create'
+
+        get :latest, to: 'apps/latest#show'
+        get :version_exist, to: 'apps/version_exist#show'
+        get :versions, to: 'apps/versions#index'
+        get 'versions/(:release_version)', to: 'apps/versions#show'
+      end
+
+      resources :schemes, except: %i[new edit], shallow: true do
+        resources :channels, except: %i[new edit]
+      end
+
+      resources :collaborators, param: :user_id, except: %i[index new edit]
+    end
+    resources :releases, only: %i[update destroy]
 
     resources :debug_files, except: %i[new edit create] do
       collection do
@@ -156,17 +228,14 @@ Rails.application.routes.draw do
     end
 
     resources :devices, only: %i[update]
+    resources :version, only: :index
 
-    namespace :jenkins do
-      get 'projects', to: 'projects#index'
-      get 'projects/:project', to: 'projects#show', as: 'project'
-      get 'projects/:project/build', to: 'build#create', as: 'project_build'
-      get 'projects/:project/status/(:id)', to: 'status#show', as: 'project_status'
+    if Setting.show_footer_openapi_endpoints
+      mount Rswag::Api::Engine => '/swagger', as: :openapi
+      mount Rswag::Ui::Engine => '/swagger', as: :openapi_ui
     end
 
-    namespace :zealot do
-      resources :version, only: :index
-    end
+    match '*unmatched_route', via: :all, to: 'base#raise_not_found', format: :json
   end
 
   #############################################
@@ -174,6 +243,31 @@ Rails.application.routes.draw do
   #############################################
   post '/graphql', to: 'graphql#execute'
 
-  match '/', via: [:post, :put, :patch, :delete], to: 'application#raise_not_found', format: false
+  #############################################
+  # Development Only
+  #############################################
+  if Rails.env.development?
+    mount LetterOpenerWeb::Engine, at: '/tools/inbox'
+    mount GraphiQL::Rails::Engine, at: "/tools/graphiql", graphql_path: "/graphql"
+  end
+
+  ############################################
+  # URL Friendly
+  ############################################
+  scope path: ':channel', format: false, as: :friendly_channel do
+    get '/overview', to: 'channels#show'
+    get '', to: 'releases#index', as: 'releases'
+    get 'versions', to: 'channels/versions#index', as: 'versions'
+    get 'versions/:name', to: 'channels/versions#show', name: /(.+)+/, as: 'version'
+    delete 'versions/:name', to: 'channels/versions#destroy', name: /(.+)+/
+    get 'release_types/:name', to: 'channels/release_types#index', name: /(.+)+/, as: 'release_types'
+    delete 'release_types/:name', to: 'channels/release_types#destroy', name: /(.+)+/
+    get 'branches/:name', to: 'channels/branches#index', name: /(.+)+/, as: 'branches'
+    delete 'branches/:name', to: 'channels/branches#destroy', name: /(.+)+/
+    get ':id', to: 'releases#show', as: 'release'
+    # get ':id/download', to: 'download/releases#show', as: 'channel_release_download'
+  end
+
+  match '/', via: %i[post put patch delete], to: 'application#raise_not_found', format: false
   match '*unmatched_route', via: :all, to: 'application#raise_not_found', format: false
 end

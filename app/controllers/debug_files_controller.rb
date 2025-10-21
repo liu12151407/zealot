@@ -1,39 +1,68 @@
 # frozen_string_literal: true
 
 class DebugFilesController < ApplicationController
-  before_action :authenticate_user!, except: %i[index show]
-  before_action :set_debug_file, only: %i[destroy]
+  before_action :authenticate_user!, except: %i[index show device]
+  before_action :set_debug_file, only: %i[show reprocess destroy]
 
   def index
-    @title = '调试文件列表'
-    @apps = App.avaiable_debug_files
-    authorize @apps
+    @title = t('debug_files.title')
+    @apps = manage_user_or_guest_mode? ? App.debug_files.all : current_user&.apps
+
+    authorize @apps.present? ? @apps.first : DebugFile.new
+  end
+
+  def show
+    @app = @debug_file.app
   end
 
   def new
-    @title = '上传调试文件文件'
-    @apps = App.all
+    @title = t('debug_files.index.upload')
+    @apps = manage_user_or_guest_mode? ? App.active : current_user.apps.active 
     @debug_file = DebugFile.new
+    @debug_file.app_id = params[:app_id] if params[:app_id] && App.find(params[:app_id])
+    @debug_file.device_type = params[:device]
+
     authorize @debug_file
   end
 
   def create
-    @title = '上传调试文件文件'
+    @title = t('debug_files.index.upload')
     @debug_file = DebugFile.new(debug_file_params)
     authorize @debug_file
 
-    if @debug_file.save
-      DebugFileTeardownJob.perform_later @debug_file
+    return render :new, status: :unprocessable_entity unless @debug_file.save
 
-      redirect_to debug_files_url, notice: '调试文件上传成功，后台正在解析文件请稍后查看详情'
-    else
-      render :new
-    end
+    device_type = DebugFile.device_types[@debug_file.device_type]
+
+    DebugFileTeardownJob.perform_later(@debug_file, current_user.id)
+    redirect_to device_app_debug_files_url(@debug_file.app, device_type),
+                notice: t('activerecord.success.create', key: t('debug_files.title'))
   end
 
   def destroy
+    authorize @debug_file
     @debug_file.destroy
-    redirect_to debug_files_url, notice: '调试文件 删除成功'
+    redirect_to debug_files_url, notice: t('activerecord.success.destroy', key: t('debug_files.title'))
+  end
+
+  def device
+    @app = App.find(params[:app_id])
+    @title = t('.title', app: @app.name, device: params[:device])
+
+    @debug_files = DebugFile
+      .where(
+        app_id: params[:app_id],
+        device_type: params[:device]
+      )
+      .page(params.fetch(:page, 1))
+      .per(params.fetch(:per_page, Setting.per_page))
+
+    authorize @debug_files.first if @debug_files.present?
+  end
+
+  def reprocess
+    DebugFileTeardownJob.perform_later(@debug_file, current_user.id)
+    redirect_to debug_file_url(@debug_file), notice: t('.success')
   end
 
   private

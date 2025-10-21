@@ -1,9 +1,8 @@
-footer.main-footer
-  .float-right.d-none.d-sm-block
-    b Version
-    = " #{Setting.version}"
-  strong
-    | Copyright &copy; 2015-2019&nbsp
-    a href="https://github.com/tryzealot/zealot" Zealot
-    | .
-  |  All rights reserved.
+footer.app-footer
+  .float-end.d-none.d-sm-inline
+    = show_api
+
+  div
+    span = powered_by
+    - if Setting.show_footer_version
+      span.px-1 = zealot_version

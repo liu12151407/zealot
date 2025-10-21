@@ -1,13 +1,20 @@
 # frozen_string_literal: true
 
 class AppsController < ApplicationController
+  include AppArchived
+
   before_action :authenticate_user! unless Setting.guest_mode
-  before_action :set_app, only: %i[show edit update destroy]
+  before_action :set_app, only: %i[show edit update destroy new_owner update_owner]
+  before_action :set_selected_schemes_and_channels, only: %i[edit]
+  before_action :process_scheme_and_channel, only: %i[create]
+  before_action :set_owner, only: %i[ new_owner update_owner ]
 
   def index
-    @title = '应用管理'
-    @apps = App.all
-    authorize @apps
+    @title = t('.title')
+    base_scope = manage_user_or_guest_mode? ? App.active : current_user.apps.active 
+    base_scope = params[:search].present? ? base_scope.search_by_name(params[:search]) : base_scope
+    @apps = params[:sort].present? ? base_scope.sort_by_name(params[:sort]) : base_scope
+    authorize @apps if @apps.present?
   end
 
   def show
@@ -15,7 +22,7 @@ class AppsController < ApplicationController
   end
 
   def new
-    @title = '新建应用'
+    @title = t('.title')
     @app = App.new
     authorize @app
 
@@ -23,65 +30,134 @@ class AppsController < ApplicationController
   end
 
   def edit
-    @title = '编辑应用'
+    raise_if_app_archived!(@app)
+
+    @title = t('.title')
   end
 
   def create
-    schemes = app_params.delete(:schemes_attributes)
-    channel = app_params.delete(:channel)
-
     @app = App.new(app_params)
     authorize @app
+    return render :new, status: :unprocessable_entity unless @app.save
 
-    return render :new unless @app.save
+    create_owner
+    create_schemes_and_channels
 
-    @app.users << current_user
-
-    create_schemes_by(@app, schemes, channel)
-
-    redirect_to apps_path, notice: "#{@app.name}应用已经创建成功！"
+    flash.now.notice = t('activerecord.success.create', key: "#{@app.name} #{t('apps.title')}")
+    respond_to do |format|
+      format.html { redirect_to apps_path }
+      format.turbo_stream
+    end
   end
 
   def update
+    raise_if_app_archived!(@app)
+
     @app.update(app_params)
-    redirect_to apps_path
+    respond_to do |format|
+      format.html { redirect_to apps_path }
+      format.turbo_stream
+    end
   end
 
   def destroy
     @app.destroy
-    destory_app_data
+    destroy_app_data
 
-    redirect_to apps_path
+    respond_to do |format|
+      format.any { redirect_to apps_path }
+    end
+  end
+
+  def new_owner
+    raise_if_app_archived!(@app)
+
+    @title = t('.title')
+  end
+
+  def update_owner
+    raise_if_app_archived!(@app)
+
+    @title = t('apps.new_owner.title')
+    @previous_user = @collaborator.user
+    user_id = owner_params[:user_id]
+    if @previous_user.id == user_id.to_i
+      notice = t('activerecord.errors.messages.same_value', key: t('apps.new_owner.title'))
+      return redirect_to @collaborator.app, notice: notice, status: :see_other
+    end
+
+    new_owner = User.find(user_id)
+    if existed_collaborator = @app.collaborators.find_by(user: new_owner)
+      existed_collaborator.destroy
+    end
+
+    return render :new_owner, status: :unprocessable_entity unless @collaborator.update(user: new_owner)
+
+    notice = t('activerecord.success.update', key: t('apps.new_owner.title'))
+    flash.now.notice = notice
+    respond_to do |format|
+      format.html { redirect_to @app }
+      format.turbo_stream
+    end
   end
 
   private
 
-  def destory_app_data
+  def destroy_app_data
     require 'fileutils'
+
     app_binary_path = Rails.root.join('public', 'uploads', 'apps', "a#{@app.id}")
-    logger.debug "Delete app all binary and icons in #{app_binary_path}"
     FileUtils.rm_rf(app_binary_path) if Dir.exist?(app_binary_path)
   end
 
-  def create_schemes_by(app, schemes, channel)
-    schemes.values[0][:name].each do |scheme_name|
-      next if scheme_name.blank?
+  def set_owner
+    @collaborator = @app.collaborators.find_by(owner: true)
+  end
 
-      scheme = app.schemes.create name: scheme_name
-      next unless channels = channel_value(channel)
+  def create_owner
+    @app.create_owner(current_user)
+  end
 
-      channels.each do |channel_name|
+  def create_schemes_and_channels
+    @schemes.each do |scheme_name|
+      scheme = @app.schemes.create(name: scheme_name)
+      next if @channels.empty?
+
+      @channels.each do |channel_name|
         scheme.channels.create name: channel_name, device_type: channel_name.downcase.to_sym
       end
     end
   end
 
-  def channel_value(platform)
-    case platform
-    when 'ios' then ['iOS']
-    when 'android' then ['Android']
-    when 'both' then ['Android', 'iOS']
+  # def update_schemes_and_channels
+  #   existed_schemes = @app.schemes.all
+
+  #   @schemes.each do |scheme_name|
+  #     scheme = @app.schemes.find_by(name: scheme_name)
+
+
+  #     @channels.each do |channel_name|
+  #       scheme.channels.create name: channel_name, device_type: channel_name.downcase.to_sym
+  #     end
+  #   end
+  # end
+
+  def set_selected_schemes_and_channels
+    @schemes = []
+    @channels = []
+    @app.schemes.each do |scheme|
+      @schemes << scheme.name
+
+      channels = scheme.channels.pluck(:name)
+      channels.each do |channel_name|
+        @channels << channel_name unless @channels.include?(channel_name)
+      end
     end
+  end
+
+  def process_scheme_and_channel
+    @schemes = app_params.delete(:scheme_attributes)[:name].reject(&:empty?)
+    @channels = app_params.delete(:channel_attributes)[:name].reject(&:empty?)
   end
 
   def set_app
@@ -89,26 +165,20 @@ class AppsController < ApplicationController
     authorize @app
   end
 
-  def app_info
-    @release =
-      if params[:version]
-        @app.releases.find_by(app: @app, version: params[:version])
-      else
-        @app.releases.last
-      end
-
-    raise ActiveRecord::RecordNotFound, "没有找到应用版本 version: #{params[:version]}" unless @release
-  end
-
   def app_params
     @app_params ||= params.require(:app)
                           .permit(
-                            :name, :channel,
-                            schemes_attributes: { name: [] }
+                            :name,
+                            scheme_attributes: { name: [] },
+                            channel_attributes: { name: [] },
                           )
   end
 
   def render_not_found_entity_response(e)
-    redirect_to apps_path, notice: "没有找到应用 #{e.id}，跳转至应用列表"
+    redirect_to apps_path, notice: t('apps.messages.failture.not_found_app', id: e.id)
+  end
+
+  def owner_params
+    params.require(:collaborator).permit(:user_id)
   end
 end

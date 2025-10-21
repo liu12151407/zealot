@@ -1,8 +1,7 @@
 == render 'layouts/content_header'
 
 // Main content
-section.content
-  - if user_signed_in?
+.app-content
+  .container-fluid
     == render 'layouts/messages'
-
-  == yield
+    == yield

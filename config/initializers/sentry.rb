@@ -1,31 +1,42 @@
 # frozen_string_literal: true
 
-# 默认开启 Sentry，如果不想使用设置 ZEALOT_SENTRY_DISABLE=1
-if ENV['ZEALOT_SENTRY_DISABLE'].blank?
+# Disable error report to set ZEALOT_SENTRY_DISABLE=1, enabled by default.
+if Rails.env.production? && ActiveModel::Type::Boolean.new.cast(ENV['ZEALOT_SENTRY_DISABLE'] || false)
   Rails.configuration.to_prepare do
-    Raven.configure do |config|
-      config.silence_ready = true
-      config.dsn = ENV['ZEALOT_SENTRY_DNS'] || 'https://133aefa9f52448a1a7900ba9d02f93e1@sentry.io/1878137'
+    Sentry.init do |config|
+      config.dsn = ENV['ZEALOT_SENTRY_DNS'] || 'https://133aefa9f52448a1a7900ba9d02f93e1@o333914.ingest.us.sentry.io/1878137'
+
+      config.enable_logs = true
+      config.logger = Rails.logger
+      config.environment = Rails.env
+      config.enabled_environments = %w[production development]
+      config.include_local_variables = true
+      config.rails.report_rescued_exceptions = true
+      config.rails.structured_logging.enabled = true
+      config.breadcrumbs_logger = %i[active_support_logger sentry_logger http_logger]
+      config.enabled_patches << :faraday << :graphql
+      config.send_default_pii = true
       config.excluded_exceptions += [
         'ActionController::RoutingError',
         'ActiveRecord::RecordNotFound',
         'ActiveRecord::RecordInvalid',
         'ActiveRecord::NoDatabaseError',
+        'ActiveRecord::PendingMigrationError',
+        'TinyAppstoreConnect::ConnectAPIError',
         'PG::ConnectionBad',
+        'AppInfo::UnkownFileTypeError',
+        'Interrupt',
+        'SystemExit',
+        'Errno::ENOSPC',
       ]
-      config.sanitize_fields = Rails.application.config.filter_parameters.map(&:to_s)
-      config.sanitize_fields << 'token'
 
-      version = Setting.version
-      vcs_ref = Setting.vcs_ref
-
-      if vcs_ref.present?
-        config.release = "#{version}-#{vcs_ref}"
-        config.tags = {
-          docker: true,
-          docker_tag: ENV['DOCKER_TAG']
-        }
-      end
+      config.release = Setting.version
     end
+
+    Sentry.set_tags(
+      docker_tag: ENV['DOCKER_TAG'].presence || 'development',
+      vcs_ref: Setting.vcs_ref.presence,
+      locale: I18n.default_locale
+    )
   end
 end
